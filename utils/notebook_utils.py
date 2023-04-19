@@ -163,7 +163,8 @@ class Notebook:
 
     def get_runtime_version(self) -> Union[str, None]:
         pat = r"(^\d{1,2}\.\d{1,2}).*"
-        full_version = self.context["tags"]["sparkVersion"]
+        context = self.get_context()
+        full_version = context.get("tags").get("sparkVersion")
         return re.search(pat, full_version).group(1)
 
     def valid_runtime(self) -> bool:
