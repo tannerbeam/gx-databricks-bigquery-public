@@ -161,11 +161,12 @@ class Notebook:
     def get_branch(self) -> Union[str, None]:
         return self.context.get("extraContext").get("mlflowGitReference")
 
-    def get_runtime_version(self) -> Union[str, None]:
+      def get_runtime_version(self) -> Union[str, None]:
         pat = r"(^\d{1,2}\.\d{1,2}).*"
         context = self.get_context()
         full_version = context.get("tags").get("sparkVersion")
-        return re.search(pat, full_version).group(1)
+        re_match = re.search(pat, full_version)
+        return re_match.group(1) if re_match else None
 
     def valid_runtime(self) -> bool:
         pat = r"(^\d{1,2})\.\d{1,2}"
