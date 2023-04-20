@@ -1,7 +1,7 @@
 # gx-databricks-bigquery-public
 > How to leverage the power of Databricks notebooks and GX data quality checks to create validated data workflows
 
-Full instructions available at the [Great Expectations Blog](https://greatexpectations.io/blog/gx-databricks-notebooks-a-powerful-alliance-for-automation).
+Full instructions available at the [Great Expectations Blog](https://greatexpectations.io/blog/gx-databricks-notebooks-a-powerful-alliance-for-validated-data-workflows).
 
 
 ### Requirements
