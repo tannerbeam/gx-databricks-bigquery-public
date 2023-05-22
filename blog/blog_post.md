@@ -83,20 +83,20 @@ As always, be sure to not check your credentials files into git (e.g. by using a
 ### Repo organization
 Let's briefly touch on the organization of this repo's contents:
 
-#### `/` (top level)
+#### Top Level
 - Directories 
 - dotfiles (e.g. `.gitignore`)
 -  GCP Service Account credentials JSON file
 -  repo config YAML file
 -  Pandas DataFrame PKL file with some sample data
 
-#### `/src`
+#### /src
 - Databricks notebooks with executable code for scheduled orchestration
 
-#### `/utils`
+#### /utils
 - Python files (_not_ databricks notebooks!) to be imported
 
-#### `/great_expectations` 
+#### /great_expectations
 - Anything pertaining to data validation with GX
 
 The general idea is to use Databricks notebooks in `/src` as the workhorses for automated data workflows. In these notebooks, we get data, transform it, validate its quality, and write it to storage. To help us with these typical data tasks, we import modules from `/utils`. 
@@ -135,15 +135,15 @@ To avoid instances of `FileNotFoundError` and other problems:
 
 ### GX notes
 
-This framework uses GX version `0.16.6`. Due to its use of [fluent Datasource configuration](https://greatexpectations.io/blog/), it will not work with any version of GX prior to `0.16`. If you encounter any questions while adapting this framework for use with a GX version other than `0.16.6`, check out the #gx-community-support channel of [our community Slack](https://greatexpectations.io/slack).
+This framework uses GX version 0.16.13. Due to its use of [fluent datasource configuration](https://greatexpectations.io/blog/the-fluent-way-to-connect-to-data-sources-in-gx), it will not work with any version of GX prior to 0.16. If you encounter any questions while adapting this framework for use with a GX version other than 0.16.13, check out the #gx-community-support channel of [our community Slack](https://greatexpectations.io/slack).
 
 This example also uses my own GX wrapper library, which abstracts a significant amount of GX configuration for the sake of simplicity. Keep this in mind if you're looking at this alongside the [official GX documentation](https://docs.greatexpectations.io/docs), which doesn't use these wrappers.
 
 ## Step 1: Initializing repo notebooks with Python dataclasses
 
-Our workhorse notebook is in the `src` directory called `pypi_pkg_downloads`. 
+Our workhorse notebook for this exercise is `src/pypi_pkg_downloads`. 
 
-Open the notebook and connect it to an active cluster. The libraries `pandas-gbq` and `great-expectations` are required, so install them as [notebook-scoped libraries](https://docs.databricks.com/libraries/notebooks-python-libraries.html) with `%pip install` by running the first cell. (Alternately, you can install them [on your cluster](https://docs.databricks.com/libraries/cluster-libraries.html)). 
+Open the notebook and connect it to an active cluster. The Python libraries `pandas-gbq` and `great-expectations` are required, so install them as [notebook-scoped libraries](https://docs.databricks.com/libraries/notebooks-python-libraries.html) with `%pip install` by running the first cell. (Alternately, you can install them [on your cluster](https://docs.databricks.com/libraries/cluster-libraries.html)). 
 
 Run the subsequent cells to clear notebook parameters, import modules and create our dataclasses.
 
@@ -160,13 +160,13 @@ nb.attributes
 ```
 
 The notebook attributes are:
-- path: Absolute path of the notebook
-- url: URL of the notebook at `https://your-workspace-name.cloud.databricks.com`
-- has_git: `True` if the Notebook is associated with a Git repo (i.e. in `/Workspace/Repos`)
-- name: The filename of the current notebook
-- repo: URL of cloned git repo
-- branch: Current Git branch name
-- config_file: Relative path of `config.yml` file
+- **path:** Absolute path of the notebook
+- **url:** URL of the notebook at `https://your-workspace-name.cloud.databricks.com`
+- **has_git:** `True` if the Notebook is associated with a Git repo (i.e. in `/Workspace/Repos`)
+- **name:** The filename of the current notebook
+- **repo:** URL of cloned git repo
+- **branch:** Current Git branch name
+- **config_file:** Relative path of `config.yml` file
 
 We also have a dataclass called `RepoConfig` that holds, well... _even more stuff_. 
 
@@ -189,13 +189,33 @@ rc.attributes
 
 For the sake of brevity, we won't go into extensive details on what all is contained in the `RepoConfig` dataclass, but it's worth inspecting the attributes and seeing what's in there for yourself.
 
+### Parmeterized dates and timestamps
+Before we query the public data, let's define a date range for restricting the results. A common scenario in a scheduled data workflow would be to trigger a batch job that runs every day at the end of the day (or the following day) that processes all of the day's (or prior day's) data. If we were doing a one-off query, on the other hand, we might want to get a big chunk of data over a historical time period (e.g. last 6 months). Let's assume we're doing the former, so we only want to query the most recent full day of data. Instead of hardcoding the dates in the notebook, let's take advantage of Databricks' built-in notebook parameters, also known as [widgets](https://docs.databricks.com/notebooks/widgets.html), which can be easily modified at runtime via [Databricks Workflows](https://docs.databricks.com/workflows/index.html).
+
+```Python
+
+date_range = [
+    dbutils.widgets.get("param_dt_begin"),
+    dbutils.widgets.get("param_dt_end"),
+]
+```
+
+The default values for **param_dt_begin** and **param_dt_end** are yesterday's date relative to current UTC time. Let's also go ahead and use Python's `pandas` and `datetime` libraries to generate a list of timestamps for those dates:
+
+```Python
+ts_range = [
+    pd.Timestamp(date_range[0], tz="UTC"),
+    pd.Timestamp(date_range[1], tz="UTC") + timedelta(hours=23, minutes=59, seconds=59),
+]
+```
+
 ## Step 2: Connecting to BigQuery public datasets and getting data
 
 Now that our notebook has been configured, we can move on to getting our hands on some data. Well, almost.
 
 Before querying the data from your Databricks notebook, I recommend that you [add the public dataset to your project via the Google Cloud Console](https://console.cloud.google.com/bigquery\(analyticshub:projects/1057666841514/locations/us/dataExchanges/google_cloud_public_datasets_17e74966199/listings/python_package_index_pypi_17f0bae64b5) and use the Console to inspect the table schema and potential resource consumption. 
 
-To limit resource consumption, restrict the number of partitions you query by querying along the `timestamp` field, and also be sure to always use `where file.project = ...` so you're only looking at downloads for packages of interest. 
+To limit resource consumption (i.e. how much data you're reading from BigQuery), restrict the number of partitions you query by querying along the **timestamp** field, and also be sure to always use `where file.project = ...` so you're only looking at downloads for packages of interest. 
 
 Ok now we're _really_ ready to get some data. Since we already have a `pandas-gbq.context` object in our `RepoConfig` dataclass, we're ready to start querying. 
 
@@ -248,26 +268,27 @@ Let's assume that we're interested in tracking daily downloads of the `great-exp
 
 A GX [Expectation](https://docs.greatexpectations.io/docs/terms/expectation) is a verifable assertion about data. For example, we may _expect_ that a column with user IDs doesn't have any null values, or that a column with timestamps has values within a certain range. Based on our knowledge of the data, we can create a GX [Validator](https://docs.greatexpectations.io/docs/terms/validator), which will hold our Expectations, and can be used to check the integrity of the data values in our Pandas DataFrame.
 
-The following cell will create a GX [Data Context](https://docs.greatexpectations.io/docs/terms/data_context) with our default configuration for an in-memory Pandas DataFrame: 
-
 Run the following snippet in the notebook to instantiate a Validator. 
 
 ```Python
-# get a gx validator
-validator = gx_utils.default_validator(pandas_df = df, date_range=date_range)
+validator = gx_utils.default_validator(
+    pandas_df=df, date_range=date_range, overwrite=True
+)
 ```
+
+If this snippet is being run for the first time, a new Validator will be created and its Expectation Suite written to disk (by default to `great_expectations/expectations/` directory as a JSON file). If you pass `overwrite=False` and no Expectation Suite exists in the default location, an Exception will occur; this can be fixed by passing `overwite=True` on the first run and subsequently changing it to `overwrite=True` to more quickly create the Validator from the existing Expectation Suite on disk until you need to change the Expectations it contains and overrwite it again. 
 
 For every `validator.expect_*` statement within the method, a progress bar will be generated in the notebook cell. The size of our Pandas DataFrame is relatively small, so this should only take a few seconds, but consider that the time will vary depending on cluster size, data size, number of Expecations in the Validator, etc.
 
-The Expectations created by the `gx_utils.default_validator()` method are not meant to be exhaustive. Rather, they're intended to provide a working example of different types of Expectations and how they can be applied in bulk (i.e. to multiple columns using a list comprehension).
+The Expectations created by the `gx_utils.default_validator()` method are not meant to be exhaustive. Rather, they're intended to provide a working example of different types of Expectations and how they can be applied in bulk (i.e. to multiple columns using a Python list comprehension).
 
 Below is a partial descriptive list:
-- `download_time`, `country_code`, `file_type`, `pkg_version` and `dt` should _never_ be null
+- **download_time**, **country_code**, **file_type**, **pkg_version** and **dt** should _never_ be null
 - All other columns should _mostly_ (>= 95%) not be null
-- `download_time` should be of type "Timestamp"
-- `download_time` should be within the specified date range
-- `country_code` should _mostly_ (>=99%) be in our list of ISO country codes in `utils/iso3166.py`
-- `pkg_version` should _mostly_ (>=95%) match our prescribed regex pattern
+- **download_time** should be of type "Timestamp"
+- **download_time** should be within the specified range
+- **country_code** should _mostly_ (>=99%) be in our list of ISO country codes in `utils/iso3166.py`
+- **pkg_version** should _mostly_ (>=95%) match our prescribed regex pattern
 
 You can find a full list of available Expectations [here](https://greatexpectations.io/expectations/). 
 
@@ -280,13 +301,41 @@ The next step is to create a GX [Checkpoint](https://docs.greatexpectations.io/d
 checkpoint = gx_utils.default_checkpoint(
     pandas_df=df,
     validator=validator,
-    evaluation_parameters={
-        ep: validator.get_evaluation_parameter(ep) for ep in ["min_ts", "max_ts"]
-    },
+    evaluation_parameters={"min_ts": min(ts_range), "max_ts": max(ts_range)},
 )
 ```
 
-The Checkpoint by itself doesn't do anything; we actually need to _run_ the Checkpoint to see the data validation results.
+One thing to call out in the above snippet is that we need to specify our [evaluation parameters](https://docs.greatexpectations.io/docs/terms/evaluation_parameter/) because if we're generating a Validator from the Expectation Suite that is saved to disk, those values are likely stale. 
+
+For example, if I created a Validator yesterday and saved the resulting Expectation Suite to disk, my parameters for the timestamp range might be: 
+
+```
+"evaluation_parameters": {
+    "max_ts": "2023-01-01T23:59:59+00:00",
+    "min_ts": "2023-01-01T00:00:00+00:00"
+  },
+```
+
+But let's say I want to validate for _today_ (not yesterday!), and I'm getting my Validator from the Expectation Suite in my filesystem; at this point, those values of `min_ts` and `max_ts` are out of date by 1 day and what I really want is: 
+
+```
+"evaluation_parameters": {
+    "max_ts": "2023-01-02T23:59:59+00:00",
+    "min_ts": "2023-01-02T00:00:00+00:00"
+  },
+```
+
+So I need to be sure to pass the relevant value for the current run to the Checkpoint; otherwise, the following Expectation in my Expectation Suite will fail because it's looking for timestamps from yesterday in data with timestamps from today.
+
+```Python
+    validator.expect_column_values_to_be_between(
+        column="download_time",
+        min_value={"$PARAMETER": "min_ts"},
+        max_value={"$PARAMETER": "max_ts"},
+    )
+```
+
+OK, moving on. The Checkpoint by itself doesn't do anything; we actually need to _run_ the Checkpoint to see the data validation results.
 
 ```Python
 # run the checkpoint against the validator
@@ -308,7 +357,6 @@ results.check_results(failures_allowed=0)
 
 # list failures from validation results
 results.list_failures()
-
 ```
 
 This sort of thing could be useful if, for example, you wanted to terminate a scheduled run prior to persisting data to your data lake or data warehouse because it exceeded your data quality comfort threshold.
