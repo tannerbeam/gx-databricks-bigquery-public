@@ -16,7 +16,6 @@ from great_expectations.validator.validator import Validator
 import json
 import os
 import re
-from ruamel import yaml
 from typing import Optional, Union
 from datetime import datetime, timedelta
 
@@ -45,6 +44,10 @@ def default_context(pandas_df: PandasDataFrame) -> Context:
     """
     Get an in-memory (ephemeral) data context based on repo config.
     Use fluent datasources (GX v16.0 and above).
+    Args:
+        - pandas_df: pandas dataframe to be validated
+    Returns:
+        GX EphemeralContext w/ config
     """
     config = DataContextConfig(
         store_backend_defaults=FilesystemStoreBackendDefaults(root_directory=rc.gx_tld),
@@ -61,8 +64,9 @@ def default_context(pandas_df: PandasDataFrame) -> Context:
         },
     )
     context = gx.get_context(project_config=config)
-    datasource = context.sources.add_or_update_pandas(name=rc.datasource_name)
-    data_asset = datasource.add_dataframe_asset(name=rc.asset_name, dataframe=pandas_df)
+    context.sources.add_or_update_pandas(name=rc.datasource_name).add_dataframe_asset(
+        name=rc.asset_name, dataframe=pandas_df
+    )
     return context
 
 
@@ -154,7 +158,7 @@ def default_validations(
 def default_validator(
     pandas_df: PandasDataFrame,
     date_range: list[str],
-    context=Optional[Context],
+    context: Optional[Context] = None,
     overwrite: Optional[bool] = False,
 ) -> Validator:
     """
@@ -172,11 +176,11 @@ def default_validator(
         context = default_context(pandas_df)
 
     expectation_suite_name = rc.expectation_suite_name
-    context = default_context(pandas_df)
-    datasource = context.datasources.get(expectation_suite_name)
-    data_asset = context.get_datasource(rc.datasource_name).get_asset(rc.asset_name)
-    data_asset.dataframe = pandas_df
-    batch_request = data_asset.build_batch_request()
+    batch_request = (
+        context.get_datasource(rc.datasource_name)
+        .get_asset(rc.asset_name)
+        .build_batch_request()
+    )
 
     # create validator with default validations added to the expectation suite
     if overwrite:
@@ -186,14 +190,18 @@ def default_validator(
         # context.delete_expectation_suite() will raise an error if the suite does not exist,
         # so we are using add_or_update_expectation_suite() to ensure this cannot happen
         context.add_or_update_expectation_suite(
-            expectation_suite_name=expectation_suite_name, 
+            expectation_suite_name=expectation_suite_name,
             expectations=None,
         )
+
         validator = context.get_validator(
-            batch_request=batch_request, 
+            batch_request=batch_request,
             expectation_suite_name=expectation_suite_name,
         )
+
         validator = default_validations(pandas_df, date_range, validator)
+        # will persist the expectation suite to disk as json
+        validator.save_expectation_suite()
 
     # otherwise create validator with expectations associated with the expectation_suite_name
     else:
@@ -201,12 +209,10 @@ def default_validator(
             f"Creating Validator using expectation suite '{expectation_suite_name}' in GX directory."
         )
         validator = context.get_validator(
-            batch_request=batch_request, 
-            expectation_suite_name=expectation_suite_name,
+            batch_request=batch_request, expectation_suite_name=expectation_suite_name
         )
-    
+
     return validator
-        
 
 
 def default_checkpoint(
