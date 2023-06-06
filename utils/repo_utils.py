@@ -14,6 +14,11 @@ import inspect
 import os
 import sys
 
+from pyspark.sql import SparkSession
+from pyspark.dbutils import DBUtils
+
+spark = SparkSession.builder.getOrCreate()
+dbutils = DBUtils(spark)
 
 @dataclass
 class RepoConfig:
@@ -42,6 +47,11 @@ class RepoConfig:
             "batch_ids": {"dt": notebook_utils.default_query_date()}
         }
     )
+    gx_cloud_base_url: str = "https://api.greatexpectations.io"
+    gx_cloud_organization_id: str = "3cd57c8a-611b-4393-a800-b633f0137c74"
+    gx_cloud_access_token: str = dbutils.secrets.get(
+        scope="analytics", key="cloud-token"
+    )
 
     def __post_init__(self):
         self.asset_name: str = self.nb_name
@@ -50,6 +60,7 @@ class RepoConfig:
         self.tld: str = f"/Workspace/Repos/{self.repo_directory}/{self.repo_name}"
         self.gx_tld: str = self.create_gx_dir()
         self.gbq_context: pandas_gbq.gbq.Context = self.pandas_gbq_context()
+        self.cloud_env_vars: list[str] = self.set_cloud_env_vars()
         self.attributes: dict[str] = {k: v for k, v in self.__dict__.items()}
 
     @classmethod
@@ -67,6 +78,22 @@ class RepoConfig:
                 for key, val in inspect.signature(RepoConfig).parameters.items()
             }
         )
+
+    def set_cloud_env_vars(self) -> list[str]:
+        """
+        Use os.environ to set gx cloud credentials
+        """
+
+        os_vars: dict[str] = {
+            "GE_CLOUD_BASE_URL": self.gx_cloud_base_url,
+            "GE_CLOUD_ORGANIZATION_ID": self.gx_cloud_organization_id,
+            "GE_CLOUD_ACCESS_TOKEN": self.gx_cloud_access_token,
+        }
+
+        for k, v in os_vars.items():
+            os.environ[k] = v
+
+        return [var for var in os.environ if var in os_vars.keys()]
 
     def create_gx_dir(self) -> str:
         """

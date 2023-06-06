@@ -1,12 +1,14 @@
 # Databricks notebook source
-# notebook-scoped install of dependencies not supplied by databricks runtime
-# note: can also do a cluster-scoped install
-%pip install great-expectations>=0.16.13 pandas-gbq>=0.19.1
+# rm this cell before moving to prod
 
-# COMMAND ----------
+%load_ext autoreload
+%autoreload 2
 
 # clear notebook parameters
 dbutils.widgets.removeAll()
+
+# don't get data from bigquery
+dev=True
 
 # COMMAND ----------
 
@@ -87,13 +89,33 @@ where
 
 # COMMAND ----------
 
-# use pandas_gbq library to get a pandas dataframe of query results
-df = read_gbq(query, use_bqstorage_api=True)
+if dev: 
+    df=pd.read_pickle("../pypi_sample_data_great-expectations.pkl")
+else:
+    # use pandas_gbq library to get a pandas dataframe of query results
+    df = read_gbq(query, use_bqstorage_api=True)
 
 # COMMAND ----------
 
-# inspect pandas dataframe schema
-df.info()
+context = gx_utils.default_context()
+data_asset = gx_utils.default_asset(pandas_df = df)
+data_asset.dataframe = df
+batch_request = data_asset.build_batch_request()
+
+# COMMAND ----------
+
+data_asset.get_batch_list_from_batch_request(batch_request)
+
+# COMMAND ----------
+
+validator = context.get_validator(
+    batch_request=batch_request, 
+    expectation_suite_name=rc.expectation_suite_name
+)
+
+# COMMAND ----------
+
+validator = context.get_validator(expectation_suite_name=rc.expectation_suite_name, batch_request=batch_request)
 
 # COMMAND ----------
 
@@ -108,22 +130,24 @@ df.info()
 # -- subsequently can use overwrite=False
 
 validator = gx_utils.default_validator(
-    pandas_df=df, date_range=date_range, overwrite=True
+    pandas_df=df,  
+    date_range=date_range, 
+    batch_request=batch_request,
+    overwrite=True
 )
 
 # COMMAND ----------
 
 # create a checkpoint for validating pandas dataframe against expectation suite
-checkpoint = gx_utils.default_checkpoint(
-    pandas_df=df,
-    validator=validator,
-    evaluation_parameters={"min_ts": min(ts_range), "max_ts": max(ts_range)},
-)
+checkpoint = gx_utils.default_checkpoint(pandas_df=df)
 
 # COMMAND ----------
 
 # run the checkpoint against the validator
-checkpoint_run = checkpoint.run()
+checkpoint_run = checkpoint.run(
+    batch_request=gx_utils.default_batch_request(pandas_df=df),
+    evaluation_parameters={"min_ts": min(ts_range), "max_ts": max(ts_range)},
+)
 
 # COMMAND ----------
 

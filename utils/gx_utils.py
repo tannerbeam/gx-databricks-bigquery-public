@@ -6,11 +6,13 @@ from great_expectations.data_context.types.base import (
     DataContextConfig,
     FilesystemStoreBackendDefaults,
 )
-from great_expectations.data_context.data_context.ephemeral_data_context import (
-    EphemeralDataContext as Context,
+from great_expectations.data_context.data_context.cloud_data_context import (
+    CloudDataContext as Context,
 )
-from great_expectations.checkpoint import SimpleCheckpoint
+from great_expectations.datasource.fluent.pandas_datasource import DataFrameAsset
+from great_expectations.checkpoint import Checkpoint
 from great_expectations.checkpoint.types.checkpoint_result import CheckpointResult
+from great_expectations.datasource.fluent.batch_request import BatchRequest
 from great_expectations.validator.validator import Validator
 
 import json
@@ -18,6 +20,8 @@ import os
 import re
 from typing import Optional, Union
 from datetime import datetime, timedelta
+from pyspark.sql import SparkSession
+from pyspark.dbutils import DBUtils
 
 import pandas as pd
 from pandas.core.frame import DataFrame as PandasDataFrame
@@ -40,34 +44,53 @@ def find_config_file() -> str:
 rc = get_repo_config(find_config_file())
 
 
-def default_context(pandas_df: PandasDataFrame) -> Context:
+def default_context() -> Context:
     """
     Get an in-memory (ephemeral) data context based on repo config.
     Use fluent datasources (GX v16.0 and above).
     Args:
         - pandas_df: pandas dataframe to be validated
     Returns:
-        GX EphemeralContext w/ config
+        GX CloudContext w/ config
     """
-    config = DataContextConfig(
-        store_backend_defaults=FilesystemStoreBackendDefaults(root_directory=rc.gx_tld),
-        data_docs_sites={
-            f"{rc.asset_name}": {
-                "class_name": "SiteBuilder",
-                "store_backend": {
-                    "class_name": "TupleFilesystemStoreBackend",
-                    "root_directory": rc.gx_tld,
-                    "base_directory": f"data_docs/{rc.asset_name}",
-                },
-                "site_index_builder": {"class_name": "DefaultSiteIndexBuilder"},
-            },
-        },
-    )
-    context = gx.get_context(project_config=config)
-    context.sources.add_or_update_pandas(name=rc.datasource_name).add_dataframe_asset(
-        name=rc.asset_name, dataframe=pandas_df
-    )
+    context = gx.get_context(ge_cloud_mode=True)
+
+    datasource_name = rc.datasource_name
+    asset_name = rc.asset_name
+
+    datasources = list(context.datasources.keys())
+
+    # add the default datasource if it doesn't already exist
+    if not datasource_name in datasources:
+        print(f"Adding default datasource '{datasource_name}' to context...")
+        context.sources.add_or_update_pandas(datasource_name)
+
     return context
+
+
+def default_asset(
+    pandas_df: PandasDataFrame,
+    context: Optional[Context] = None,
+) -> DataFrameAsset:
+    """
+    Create a default batch request from pandas_df.
+    """
+
+    if not context:
+        context = default_context()
+
+    datasource_name = rc.datasource_name
+    datasource = context.get_datasource(datasource_name)
+    asset_name = rc.asset_name
+    expectation_suite_name = rc.expectation_suite_name
+
+    try:
+        data_asset = datasource.get_asset(asset_name)
+    except LookupError:
+        datasource.add_dataframe_asset(name=asset_name, dataframe=pandas_df)
+        data_asset = datasource.get_asset(asset_name)
+
+    return data_asset
 
 
 def default_validations(
@@ -159,84 +182,153 @@ def default_validator(
     pandas_df: PandasDataFrame,
     date_range: list[str],
     context: Optional[Context] = None,
+    batch_request: Optional[BatchRequest] = None,
     overwrite: Optional[bool] = False,
 ) -> Validator:
     """
     Create a Validator from existing expectation suite in GX directory or from the rules defined in default_validations().
     Args:
         - pandas_df: pandas dataframe to be validated
+        - batch_request: a FluentBatchRequest for an in-memory DataFrame
         - date_range: list of ISO-8601 dates (e.g.['1970-01-01', '1970-12-31']) with starting/ending dates for the dataframe
-        - context: a GX EphemeralContext
+        - context: a GX CloudContext
         - overwrite: True to overwrite the existing expectation suite in GX directory with rules defined in default_validations().
     Returns:
         - a GX Validator that can be passed to a GX Checkpoint for dataframe validation.
     """
-
     if not context:
-        context = default_context(pandas_df)
+        context = default_context()
 
+    if not batch_request:
+        batch_request = default_batch_request(pandas_df)
+
+    expectation_suite_names = context.list_expectation_suite_names()
     expectation_suite_name = rc.expectation_suite_name
-    batch_request = (
-        context.get_datasource(rc.datasource_name)
-        .get_asset(rc.asset_name)
-        .build_batch_request()
-    )
 
     # create validator with default validations added to the expectation suite
     if overwrite:
         print(
             f"Creating new Validator by overwriting existing expectation suite '{expectation_suite_name}' in GX directory with validation rules defined in default_validations()."
         )
-        # context.delete_expectation_suite() will raise an error if the suite does not exist,
-        # so we are using add_or_update_expectation_suite() to ensure this cannot happen
-        context.add_or_update_expectation_suite(
-            expectation_suite_name=expectation_suite_name,
-            expectations=None,
-        )
+
+        if expectation_suite_name in expectation_suite_names:
+            expectation_suite = context.get_expectation_suite(expectation_suite_name)
+        else:
+            context.add_or_update_expectation_suite(
+                expectation_suite_name=expectation_suite_name, expectations=None
+            )
 
         validator = context.get_validator(
-            batch_request=batch_request,
             expectation_suite_name=expectation_suite_name,
+            batch_request=batch_request,
         )
 
         validator = default_validations(pandas_df, date_range, validator)
+
         # will persist the expectation suite to disk as json
         validator.save_expectation_suite()
 
     # otherwise create validator with expectations associated with the expectation_suite_name
     else:
         print(
-            f"Creating Validator using expectation suite '{expectation_suite_name}' in GX directory."
+            f"Creating Validator using existing expectation suite '{expectation_suite_name}'."
         )
         validator = context.get_validator(
-            batch_request=batch_request, expectation_suite_name=expectation_suite_name
+            expectation_suite_name=expectation_suite_name,
+            batch_request=batch_request,
         )
 
     return validator
 
 
+def default_action_list(slack_webhook: Optional[str] = None) -> list[dict[str]]:
+
+    spark = SparkSession.builder.getOrCreate()
+    dbutils = DBUtils(spark)
+
+    if not slack_webhook:
+        slack_webhook = dbutils.secrets.get(
+            scope="analytics_pipeline",
+            key="analytics_pipeline_status_slack_bot_webhook",
+        )
+
+    return
+    (
+        [
+            {
+                "name": "send_slack_notification_on_validation_result",  # name can be set to any value
+                "action": {
+                    "class_name": "SlackNotificationAction",
+                    "slack_webhook": slack_webhook,
+                    "notify_on": "all",  # possible values: "all", "failure", "success"
+                    "renderer": {
+                        "module_name": "great_expectations.render.renderer.slack_renderer",
+                        "class_name": "SlackRenderer",
+                    },
+                },
+            },
+            {
+                "name": "store_validation_result",
+                "action": {
+                    "class_name": "StoreValidationResultAction",
+                },
+            },
+            {
+                "name": "store_evaluation_params",
+                "action": {
+                    "class_name": "StoreEvaluationParametersAction",
+                },
+            },
+        ]
+    )
+
+
+def default_checkpoint_config(
+    pandas_df: PandasDataFrame,
+    checkpoint_name: Optional[str] = None,
+    action_list: Optional[list[dict[str]]] = None,
+) -> dict:
+
+    expectation_suite_name = rc.expectation_suite_name
+
+    if not checkpoint_name:
+        checkpoint_name = expectation_suite_name
+
+    if not action_list:
+        action_list = default_action_list()
+
+    return {
+        "config_version": 1,
+        "class_name": "Checkpoint",
+        "name": checkpoint_name,
+        "batch_request": default_batch_request(pandas_df),
+        "expectation_suite_name": expectation_suite_name,
+        "action_list": action_list,
+    }
+
+
 def default_checkpoint(
     pandas_df: PandasDataFrame,
-    validator: Validator,
     context: Optional[Context] = None,
-    evaluation_parameters: Optional[dict[str]] = None,
-) -> SimpleCheckpoint:
+    action_list: Optional[list[dict[str]]] = None,
+) -> Checkpoint:
     """
     Create a default checkpoint from config.
     """
     if not context:
-        context = default_context(pandas_df)
+        context = default_context()
 
     checkpoint_name = rc.expectation_suite_name
+    checkpoints = [c.resource_name for c in context.list_checkpoints()]
 
-    return SimpleCheckpoint(
-        config_version=1,
-        name=checkpoint_name,
-        data_context=context,
-        validator=validator,
-        run_name_template=f"%Y-%m-%d_{checkpoint_name}",
-        evaluation_parameters=evaluation_parameters,
-    )
+    if not checkpoint_name in checkpoints:
+        checkpoint_config = default_checkpoint_config(pandas_df)
+        context.add_or_update_checkpoint(**checkpoint_config)
+        checkpoint = context.get_checkpoint(checkpoint_name)
+    else:
+        checkpoint = context.get_checkpoint(checkpoint_name)
+
+    return checkpoint
 
 
 class CheckpointFailedException(Exception):
