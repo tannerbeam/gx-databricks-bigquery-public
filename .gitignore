@@ -136,8 +136,8 @@ Pipfile.lock
 .pre-commit-config.yaml
 
 # any files with API credentials
-.*creds.json
-.*credentials.json
+*creds.json
+*credentials.json
 
 # great expectations
 *.ge_store_backend_id
