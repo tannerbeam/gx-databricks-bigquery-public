@@ -4,10 +4,10 @@
 repo_directory: "dev"
 
 # {repo_name} in assumed directory structure
-repo_name: "gx-databricks-bigquery-public"
+repo_name: "gx-db-blog"
 
 # relative path of BigQuery service account credentials file
-bigquery_creds_file: ".bigquery_service_account_creds.json"
+bigquery_creds_file: "api_creds.json"
 
 # relative path of great expectations directory
 gx_dir: "great_expectations"
