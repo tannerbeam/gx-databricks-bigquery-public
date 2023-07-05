@@ -23,21 +23,17 @@ from pandas_gbq import read_gbq
 
 # COMMAND ----------
 
-# create a Notebook
-# contains attributes for notebook, filestystem, git, etc.
-nb = Notebook()
-
-# show attributes
-nb.attributes
-
-# COMMAND ----------
-
 # create a RepoConfig
 # contains attributes for notebook, parameters, config, etc.
-rc = repo_utils.get_repo_config(config_file=nb.config_file)
+rc = repo_utils.get_repo_config("../config.yml")
 
 # show attributes
 rc.attributes
+
+# COMMAND ----------
+
+# test the agent
+# ! export GX_CLOUD_ORGANIZATION_ID="3cd57c8a-611b-4393-a800-b633f0137c74" && export GX_CLOUD_ACCESS_TOKEN="b0a95ee1791d4049a680afca9a1a299b.V1.PXqsMypr8QkAmwr7RPHQzCPWwD7P6PEMIxTXtmRcRPQXXcOE-h7x6GjdJizkzw8PTfWneZJnWZMpq3UoXVqo_A" && export GX_CLOUD_BASE_URL="https://api.greatexpectations.io" && gx-agent
 
 # COMMAND ----------
 
@@ -87,54 +83,7 @@ where
   and "{date_range[1]}"
 """
 
-# COMMAND ----------
-
-if dev: 
-    df=pd.read_pickle("../pypi_sample_data_great-expectations.pkl")
-else:
-    # use pandas_gbq library to get a pandas dataframe of query results
-    df = read_gbq(query, use_bqstorage_api=True)
-
-# COMMAND ----------
-
-context = gx_utils.default_context()
-data_asset = gx_utils.default_asset(pandas_df = df)
-data_asset.dataframe = df
-batch_request = data_asset.build_batch_request()
-
-# COMMAND ----------
-
-data_asset.get_batch_list_from_batch_request(batch_request)
-
-# COMMAND ----------
-
-validator = context.get_validator(
-    batch_request=batch_request, 
-    expectation_suite_name=rc.expectation_suite_name
-)
-
-# COMMAND ----------
-
-validator = context.get_validator(expectation_suite_name=rc.expectation_suite_name, batch_request=batch_request)
-
-# COMMAND ----------
-
-# get a gx validator using the expectation suite in RepoConfig
-# if overwrite=True:
-# - a new validator object will be created using default validaiton rules
-# - the expecation suite on disk will be overwritten
-# if overwrite=False: 
-# - returns expectation suite from disk if exists
-# - DataContextError if expectation suite does not exist
-# -- change to overwrite=True to create suite for first time
-# -- subsequently can use overwrite=False
-
-validator = gx_utils.default_validator(
-    pandas_df=df,  
-    date_range=date_range, 
-    batch_request=batch_request,
-    overwrite=True
-)
+df = read_gbq(query, use_bqstorage_api=True)
 
 # COMMAND ----------
 

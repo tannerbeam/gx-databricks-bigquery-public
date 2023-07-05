@@ -9,10 +9,14 @@ from great_expectations.data_context.types.base import (
 from great_expectations.data_context.data_context.cloud_data_context import (
     CloudDataContext as Context,
 )
+from great_expectations.datasource.fluent.pandas_datasource import PandasDatasource
+from great_expectations.core.expectation_suite import ExpectationSuite
 from great_expectations.datasource.fluent.pandas_datasource import DataFrameAsset
 from great_expectations.checkpoint import Checkpoint
 from great_expectations.checkpoint.types.checkpoint_result import CheckpointResult
-from great_expectations.datasource.fluent.batch_request import BatchRequest
+from great_expectations.datasource.fluent.batch_request import (
+    BatchRequest as FluentBatchRequest,
+)
 from great_expectations.validator.validator import Validator
 
 import json
@@ -46,17 +50,24 @@ rc = get_repo_config(find_config_file())
 
 def default_context() -> Context:
     """
-    Get an in-memory (ephemeral) data context based on repo config.
-    Use fluent datasources (GX v16.0 and above).
-    Args:
-        - pandas_df: pandas dataframe to be validated
-    Returns:
-        GX CloudContext w/ config
+    Get the default (cloud) context.
     """
-    context = gx.get_context(ge_cloud_mode=True)
 
-    datasource_name = rc.datasource_name
-    asset_name = rc.asset_name
+    return gx.get_context(ge_cloud_mode=True)
+
+
+def default_datasource(
+    context: Optional[Context] = None, datasource_name: Optional[str] = None
+) -> PandasDatasource:
+    """
+    Get default (pandas) datasource.
+    """
+
+    if not context:
+        context = default_context()
+
+    if not datasource_name:
+        datasource_name = rc.datasource_name
 
     datasources = list(context.datasources.keys())
 
@@ -65,40 +76,44 @@ def default_context() -> Context:
         print(f"Adding default datasource '{datasource_name}' to context...")
         context.sources.add_or_update_pandas(datasource_name)
 
-    return context
+    return context.get_datasource(datasource_name)
 
 
-def default_asset(
-    pandas_df: PandasDataFrame,
-    context: Optional[Context] = None,
-) -> DataFrameAsset:
+def default_expectation_suite(
+    context: Optional[Context] = None, expectation_suite_name: Optional[str] = None
+) -> ExpectationSuite:
     """
-    Create a default batch request from pandas_df.
+    Get default expectation suite
     """
 
     if not context:
         context = default_context()
 
-    datasource_name = rc.datasource_name
-    datasource = context.get_datasource(datasource_name)
-    asset_name = rc.asset_name
-    expectation_suite_name = rc.expectation_suite_name
+    if not expectation_suite_name:
+        expectation_suite_name = rc.expectation_suite_name
 
-    try:
-        data_asset = datasource.get_asset(asset_name)
-    except LookupError:
-        datasource.add_dataframe_asset(name=asset_name, dataframe=pandas_df)
-        data_asset = datasource.get_asset(asset_name)
+    # add the default expectation suite if it doesn't already exist
+    if not expectation_suite_name in context.list_expectation_suite_names():
+        context.create_expectation_suite(expectation_suite_name)
 
-    return data_asset
+    expectation_suite = context.get_expectation_suite(expectation_suite_name)
+
+    context.add_or_update_expectation_suite(expectation_suite_name)
+
+    return context.get_expectation_suite(expectation_suite_name)
 
 
 def default_validations(
-    pandas_df: PandasDataFrame, date_range: list[str], validator: Validator
+    pandas_df: PandasDataFrame,
+    base_validator: Validator,
+    date_range: Optional[list[str]] = ["2023-04-11", "2023-04-11"],
 ) -> Validator:
     """
     Add validation rules (aka Expectations) to a Validator
     """
+
+    # rename base_validator for shorthand
+    vld = base_validator
 
     # all columns
     all_cols = [col for col in pandas_df.columns]
@@ -110,11 +125,11 @@ def default_validations(
     somenull_cols = [col for col in all_cols if not col in notnull_cols]
 
     # validate: expect not null
-    [validator.expect_column_values_to_not_be_null(column=c) for c in notnull_cols]
+    [vld.expect_column_values_to_not_be_null(column=c) for c in notnull_cols]
 
     # validate: expect ~mostly~ not nulls (95%)
     [
-        validator.expect_column_values_to_not_be_null(column=c, mostly=0.95)
+        vld.expect_column_values_to_not_be_null(column=c, mostly=0.95)
         for c in somenull_cols
     ]
 
@@ -123,7 +138,7 @@ def default_validations(
 
     # validate: expect timestamp type
     [
-        validator.expect_column_values_to_be_of_type(column=c, type_="Timestamp")
+        vld.expect_column_values_to_be_of_type(column=c, type_="Timestamp")
         for c in time_cols
     ]
 
@@ -135,11 +150,11 @@ def default_validations(
     ]
 
     # set evaluation params (will change based on nb param values!)
-    validator.set_evaluation_parameter("min_ts", min(ts_range))
-    validator.set_evaluation_parameter("max_ts", max(ts_range))
+    vld.set_evaluation_parameter("min_ts", min(ts_range))
+    vld.set_evaluation_parameter("max_ts", max(ts_range))
 
     # validate: expect timestamps in range
-    validator.expect_column_values_to_be_between(
+    vld.expect_column_values_to_be_between(
         column="download_time",
         min_value={"$PARAMETER": "min_ts"},
         max_value={"$PARAMETER": "max_ts"},
@@ -149,7 +164,7 @@ def default_validations(
     iso_country_codes = list(country_codes)
 
     # validate: expect country codes to be in set
-    validator.expect_column_values_to_be_in_set(
+    vld.expect_column_values_to_be_in_set(
         column="country_code", value_set=iso_country_codes, mostly=0.99
     )
 
@@ -163,7 +178,7 @@ def default_validations(
 
     # validate: expect most common values
     [
-        validator.expect_column_most_common_value_to_be_in_set(column=k, value_set=[v])
+        vld.expect_column_most_common_value_to_be_in_set(column=k, value_set=[v])
         for k, v in top_values_map.items()
     ]
 
@@ -171,74 +186,14 @@ def default_validations(
     pkg_version_regex = r"^(\d{1}\.\d{1,2}\.\d{1,2}$)"
 
     # validate: expect mostly (0.95) regex match
-    validator.expect_column_values_to_match_regex(
+    vld.expect_column_values_to_match_regex(
         column="pkg_version", regex=pkg_version_regex, mostly=0.95
     )
 
-    return validator
+    # save validation rules to suite
+    vld.save_expectation_suite()
 
-
-def default_validator(
-    pandas_df: PandasDataFrame,
-    date_range: list[str],
-    context: Optional[Context] = None,
-    batch_request: Optional[BatchRequest] = None,
-    overwrite: Optional[bool] = False,
-) -> Validator:
-    """
-    Create a Validator from existing expectation suite in GX directory or from the rules defined in default_validations().
-    Args:
-        - pandas_df: pandas dataframe to be validated
-        - batch_request: a FluentBatchRequest for an in-memory DataFrame
-        - date_range: list of ISO-8601 dates (e.g.['1970-01-01', '1970-12-31']) with starting/ending dates for the dataframe
-        - context: a GX CloudContext
-        - overwrite: True to overwrite the existing expectation suite in GX directory with rules defined in default_validations().
-    Returns:
-        - a GX Validator that can be passed to a GX Checkpoint for dataframe validation.
-    """
-    if not context:
-        context = default_context()
-
-    if not batch_request:
-        batch_request = default_batch_request(pandas_df)
-
-    expectation_suite_names = context.list_expectation_suite_names()
-    expectation_suite_name = rc.expectation_suite_name
-
-    # create validator with default validations added to the expectation suite
-    if overwrite:
-        print(
-            f"Creating new Validator by overwriting existing expectation suite '{expectation_suite_name}' in GX directory with validation rules defined in default_validations()."
-        )
-
-        if expectation_suite_name in expectation_suite_names:
-            expectation_suite = context.get_expectation_suite(expectation_suite_name)
-        else:
-            context.add_or_update_expectation_suite(
-                expectation_suite_name=expectation_suite_name, expectations=None
-            )
-
-        validator = context.get_validator(
-            expectation_suite_name=expectation_suite_name,
-            batch_request=batch_request,
-        )
-
-        validator = default_validations(pandas_df, date_range, validator)
-
-        # will persist the expectation suite to disk as json
-        validator.save_expectation_suite()
-
-    # otherwise create validator with expectations associated with the expectation_suite_name
-    else:
-        print(
-            f"Creating Validator using existing expectation suite '{expectation_suite_name}'."
-        )
-        validator = context.get_validator(
-            expectation_suite_name=expectation_suite_name,
-            batch_request=batch_request,
-        )
-
-    return validator
+    return vld
 
 
 def default_action_list(slack_webhook: Optional[str] = None) -> list[dict[str]]:
@@ -329,6 +284,68 @@ def default_checkpoint(
         checkpoint = context.get_checkpoint(checkpoint_name)
 
     return checkpoint
+
+
+def run_default_checkpoint(
+    pandas_df: PandasDataFrame,
+    date_range: list[str],
+    context: Optional[Context] = None,
+    batch_request: Optional[FluentBatchRequest] = None,
+) -> CheckpointResult:
+    """
+    Run the default checkpoint.
+    Raise error if expectation suite is empty.
+    """
+
+    expectation_suite_name = rc.expectation_suite_name
+
+    if not context:
+        context = default_context()
+
+    if not batch_request:
+        batch_request = default_batch_request(pandas_df)
+
+    # get the default validator
+    expectation_suite = default_expectation_suite()
+
+    # assert suite is not empty
+    assert (
+        len(expectation_suite.expectations) > 0
+    ), "No expectations in suite. Use `default_validator()` to create expectations."
+
+    # get the default checkpoint
+    checkpoint = default_checkpoint(pandas_df)
+
+    ts_range = [
+        pd.Timestamp(date_range[0], tz="UTC"),
+        pd.Timestamp(date_range[1], tz="UTC")
+        + timedelta(hours=23, minutes=59, seconds=59),
+    ]
+
+    # have to get suite id because of bug
+    # delete id param when this issue is fixed
+
+    suite_ids = [
+        c.to_tuple()[1]
+        for c in context.list_expectation_suites()
+        if c.resource_name == expectation_suite_name
+    ]
+
+    if len(suite_ids) == 0:
+        raise ValueError("Did not find ID for specified Expectation Suite.")
+    elif len(suite_ids) > 1:
+        raise ValueError("Found duplicate IDs.")
+    else:
+        suite_id = suite_ids[0]
+
+    checkpoint_run = checkpoint.run(
+        batch_request=default_batch_request(pandas_df),
+        evaluation_parameters={"min_ts": min(ts_range), "max_ts": max(ts_range)},
+        expectation_suite_name=expectation_suite_name,
+        expectation_suite_ge_cloud_id=suite_id,
+    )
+
+    return checkpoint_run
 
 
 class CheckpointFailedException(Exception):

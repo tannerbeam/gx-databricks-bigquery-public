@@ -13,4 +13,4 @@ bigquery_creds_file: "api_creds.json"
 gx_dir: "great_expectations"
 
 # provide a name to help identify the GX data connector type
-gx_connector_name: "pandas_fluent"
+gx_connector_name: "pandas_runtime"
